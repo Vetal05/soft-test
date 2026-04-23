@@ -1,0 +1,9 @@
+**/.git
+**/.github
+**/[Bb]in
+**/[Oo]bj
+**/TestResults
+**/out
+**/*.user
+tests/
+**/*.md
