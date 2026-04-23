@@ -4,6 +4,7 @@ obj/
 .vs/
 *.user
 TestResults/
+TestReport/
 .idea/
 .env
 .env.*
