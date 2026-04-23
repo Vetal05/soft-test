@@ -1,0 +1,9 @@
+bin/
+obj/
+**/[Oo]ut/
+.vs/
+*.user
+TestResults/
+.idea/
+.env
+.env.*
