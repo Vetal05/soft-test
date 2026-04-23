@@ -1,0 +1,20 @@
+name: Тести
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Відновити пакети
+        run: dotnet restore
+      - name: Збірка
+        run: dotnet build -c Release --no-restore
+      - name: Запуск тестів
+        run: dotnet test -c Release --no-build
