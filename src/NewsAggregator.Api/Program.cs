@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.OpenApi.Models;
+using NewsAggregator.Api.Controllers;
 using NewsAggregator.Api.Data;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -8,13 +10,48 @@ var connectionString = builder.Configuration.GetConnectionString("Default")
 builder.Services.AddDbContext<AppDbContext>(o => o.UseNpgsql(connectionString));
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(o =>
+{
+    o.AddSecurityDefinition("UserId", new OpenApiSecurityScheme
+    {
+        Description = "Ідентифікатор користувача (GUID), наприклад 3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        Name = HeaderNames.UserId,
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.ApiKey
+    });
+    o.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "UserId"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
 
 var app = builder.Build();
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+    app.Lifetime.ApplicationStarted.Register(() =>
+    {
+        var bases = app.Urls.Count > 0
+            ? app.Urls
+            : new[] { "http://localhost:5153" };
+        foreach (var u in bases)
+        {
+            var root = u.TrimEnd('/');
+            Console.WriteLine();
+            Console.WriteLine($"   Swagger: {root}/swagger");
+        }
+    });
 }
 else
     app.UseHsts();
