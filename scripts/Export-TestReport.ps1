@@ -52,18 +52,33 @@ $summary = if ($counters) {
   }
 } else { $null }
 
+function Split-FullTestName([string] $name) {
+  $lastDot = $name.LastIndexOf('.')
+  if ($lastDot -lt 0) { return @{ group = "Other"; className = "?"; method = $name } }
+  $rest = $name.Substring(0, $lastDot)
+  $method = $name.Substring($lastDot + 1)
+  $ld2 = $rest.LastIndexOf('.')
+  if ($ld2 -lt 0) { $class = $rest } else { $class = $rest.Substring($ld2 + 1) }
+  $g = "Other"
+  if ($name -match "^NewsAggregator\.(Unit|Database|Integration)Tests\.") { $g = $Matches[1] + "Tests" }
+  @{ group = $g; className = $class; method = $method; full = $name }
+}
+
 $rows = foreach ($n in $nodes) {
   $name = $n.GetAttribute("testName")
   $outc = $n.GetAttribute("outcome")
   $dur = $n.GetAttribute("duration")
-  if ($name -match "^NewsAggregator\.(Unit|Database|Integration)Tests") {
-    $g = $Matches[1] + "Tests"
-  } else { $g = "Інше" }
+  $sp = Split-FullTestName $name
+  $errN = $n.SelectSingleNode("t:Output/t:ErrorInfo/t:Message", $nsm)
+  $err = if ($errN) { $errN.InnerText } else { $null }
   [pscustomobject]@{
-    group = $g
-    name  = $name
-    outc  = $outc
-    dur   = $dur
+    group     = $sp.group
+    className = $sp.className
+    method    = $sp.method
+    name      = $name
+    outc      = $outc
+    dur       = $dur
+    err       = $err
   }
 }
 $byGroup = $rows | Group-Object -Property group | Sort-Object Name
@@ -77,15 +92,49 @@ function Get-Badge($outcome) {
 # HTML escape
 $esc = { param($s) if ($null -eq $s) { "" } else { [System.Net.WebUtility]::HtmlEncode($s) } }
 
-$rowsHtml = ($rows | ForEach-Object {
-  $b = (Get-Badge $_.outc)
-  "      <tr><td class='group'>{0}</td><td class='name'>{1}</td><td class='d'>{2}</td><td><span class='{3}'>{4}</span></td></tr>" -f `
-    (& $esc $_.group), (& $esc $_.name), (& $esc $_.dur), $b, (& $esc $_.outc)
+# Latin-only: avoids PS encoding issues. Ukrainian text is in the HTML template below.
+$sectionMeta = @{
+  "UnitTests"        = @{ title = "Unit tests";            hint = "Fast, no real DB" }
+  "DatabaseTests"    = @{ title = "Database (Testcontainers)"; hint = "Real PostgreSQL, constraints" }
+  "IntegrationTests" = @{ title = "Integration (WAF+HTTP)";   hint = "In-process host, real HTTP" }
+  "Other"            = @{ title = "Other"; hint = "" }
+}
+
+$sectionsHtml = ($byGroup | ForEach-Object {
+  $gname = $_.Name
+  $m = if ($sectionMeta.ContainsKey($gname)) { $sectionMeta[$gname] } else { @{ title = $gname; hint = "" } }
+  $rowsForG = $_.Group | Sort-Object className, method
+  $inner = ($rowsForG | ForEach-Object {
+    $b = (Get-Badge $_.outc)
+    $errRow = if ($_.err) { "      <tr class='err-row'><td colspan='4' class='err'>{0}</td></tr>" -f (& $esc $_.err) } else { "" }
+    "      <tr>
+        <td class='cls'>{0}</td>
+        <td class='meth'>{1}</td>
+        <td class='d'>{2}</td>
+        <td><span class='{3}'>{4}</span></td>
+      </tr>
+$errRow" -f (& $esc $_.className), (& $esc $_.method), (& $esc $_.dur), $b, (& $esc $_.outc)
+  }) -join "`n"
+  $hintP = if ($m.hint) { "<p class='sechint'>$($m.hint)</p>" } else { "" }
+@"
+
+  <section class='section'>
+    <h2>$( & $esc $m.title) <span class='cnt'>$($_.Count) tests</span></h2>
+    $hintP
+    <div class="tblwrap">
+    <table>
+      <thead><tr><th>Class</th><th>Method / case</th><th>Duration</th><th>Outcome</th></tr></thead>
+      <tbody>
+$inner
+      </tbody>
+    </table>
+    </div>
+  </section>
+"@
 }) -join "`n"
 
 $gHtml = ($byGroup | ForEach-Object {
-  "      <div class='g'><b>{0}</b> <span class='c'>({1} тест.)</span></div>" -f $_.Name, $_.Count
-}) -join "`n"
+  "    <li><b>$($_.Name)</b> - <span class='c'>$($_.Count) tests</span></li>" }) -join "`n"
 
 $when = (Get-Date -Format "yyyy-MM-dd HH:mm")
 $timeStr = if ($times) { $times.GetAttribute("start") } else { "" }
@@ -93,10 +142,10 @@ $ts = (Get-Date -Format o)
 
 $template = @"
 <!DOCTYPE html>
-<html lang="uk">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Результати тестів — $when</title>
+  <title>Test report $when</title>
   <style>
     :root { --bg: #0f1419; --card: #1a2129; --text: #e7e9ea; --muted: #8b98a5; --ok: #1d9bf0; --okbg: #061f35; --fail: #f4212e; --failbg: #2a1211; }
     * { box-sizing: border-box; }
@@ -111,13 +160,23 @@ $template = @"
     .kpi.failed .n { color: var(--fail); }
     .grows { background: var(--card); border-radius: 8px; padding: 0.9rem 1.1rem; margin-bottom: 1rem; }
     .g { margin: 0.2rem 0; }
+    details.int { background: var(--card); border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; }
+    details.int summary { cursor: pointer; color: #8899a6; font-size: 0.9rem; }
+    details.int ul { margin: 0.5rem 0 0 1.1rem; color: var(--muted); font-size: 0.875rem; }
+    .section { margin-bottom: 1.75rem; }
+    .section h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.35rem; }
+    .section .cnt { color: #8899a6; font-weight: 500; }
+    .sechint { color: var(--muted); font-size: 0.82rem; margin: 0 0 0.65rem; }
+    .tblwrap { overflow-x: auto; }
     .c { color: var(--muted); }
-    table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 8px; overflow: hidden; font-size: 0.875rem; }
-    th { text-align: left; padding: 0.6rem 0.75rem; color: var(--muted); font-weight: 500; background: #141a21; }
-    td { padding: 0.45rem 0.75rem; border-top: 1px solid #242d38; }
-    .group { color: #8899a6; white-space: nowrap; }
-    .name { word-break: break-all; }
-    .d { color: var(--muted); font-variant-numeric: tabular-nums; }
+    table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 8px; overflow: hidden; font-size: 0.85rem; }
+    th { text-align: left; padding: 0.55rem 0.7rem; color: var(--muted); font-weight: 500; background: #141a21; }
+    td { padding: 0.4rem 0.7rem; border-top: 1px solid #242d38; vertical-align: top; }
+    .cls { color: #7eb8da; width: 28%; }
+    .meth { word-break: break-word; }
+    .d { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; width: 5rem; }
+    tr.err-row td { border-top: none; padding-top: 0; }
+    td.err { color: #f7878c; font-size: 0.8rem; padding-left: 1.2rem; white-space: pre-wrap; }
     .badge { display: inline-block; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8rem; }
     .badge.ok { background: var(--okbg); color: #1d9bf0; }
     .badge.fail { background: var(--failbg); color: #f7878c; }
@@ -125,25 +184,26 @@ $template = @"
   </style>
 </head>
 <body>
-  <h1>Результати автотестів</h1>
-  <p class="meta">Звіт: $ts · $timeStr · <code>$(Split-Path -Leaf $trx)</code> → згенеровано скриптом <code>scripts/Export-TestReport.ps1</code></p>
+  <h1>Test results (HTML)</h1>
+  <p class="meta">Generated: $ts · run start: $timeStr · <code>$(Split-Path -Leaf $trx)</code> · <code>scripts/Export-TestReport.ps1</code></p>
   <div class="cards">
-    <div class="kpi passed"><div class="l">успіх</div><div class="n">$($summary.passed)</div></div>
-    <div class="kpi failed"><div class="l">провал</div><div class="n">$($summary.failed)</div></div>
-    <div class="kpi"><div class="l">усього</div><div class="n">$($summary.total)</div></div>
+    <div class="kpi passed"><div class="l">passed</div><div class="n">$($summary.passed)</div></div>
+    <div class="kpi failed"><div class="l">failed</div><div class="n">$($summary.failed)</div></div>
+    <div class="kpi"><div class="l">total</div><div class="n">$($summary.total)</div></div>
   </div>
-  <div class="grows">$gHtml</div>
-  <table>
-    <thead><tr><th>Група</th><th>Назва</th><th>Час</th><th>Статус</th></tr></thead>
-    <tbody>
-$rowsHtml
-    </tbody>
-  </table>
+  <details class="int">
+    <summary>What each level means (short)</summary>
+    <ul>
+$gHtml
+    </ul>
+  </details>
+$sectionsHtml
 </body>
 </html>
 "@
 
-[System.IO.File]::WriteAllText($html, $template, [System.Text.Encoding]::UTF8)
+$enc = New-Object System.Text.UTF8Encoding $true
+[System.IO.File]::WriteAllText($html, $template, $enc)
 Write-Host "OK: $html" -ForegroundColor Green
 if ($Open) { Start-Process $html }
 if ($vstestCode -ne 0) {
